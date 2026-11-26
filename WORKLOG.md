@@ -84,3 +84,21 @@ Skill'ler baştan topluca yüklenmez; görev kapsamına göre seçilir ve talima
 - Scissor Snip başlangıç denemesinin geri alındığı ve mevcut teknik durum kaydedildi.
 - Sonraki adım: başlangıç yeteneği Blueprint akışını inceleyerek Scissor Snip desteğini sistemi bozmadan tasarlamak.
 
+### 2026-11-26 — Save verisi sonrası Scissor Snip tekrar denendi
+
+- Save verisinin eski başlangıç yeteneğini tekrar yazdığı varsayımıyla `DT_AvailableCharacters/Char1` yeniden `Scissor Snip` yapıldı.
+- Asset Unreal Editor Python konsolu üzerinden kaydedildi; PIE başlatıldı ve oturum çalıştı.
+- Test sonrasında geçici script silindi. Başlangıç silahının oyun içindeki görünümü henüz kesin olarak doğrulanmış sayılmıyor; gerekirse save akışı ve runtime oyuncu yetenekleri ayrı izlenecek.
+
+
+### 2026-11-26 - Gercek baslangic kaynagi duzeltildi
+
+- `BP_Base_Character` Class Default Object icindeki `StartingAbility` alaninin dogrudan `E_ActiveAbilities.HAMMER` oldugu tespit edildi.
+- Alan `E_ActiveAbilities.SCISSOR_SNIP` yapildi; Blueprint compile edildi ve asset kalici olarak kaydedildi.
+- PIE oturumu baslatilip durduruldu. `EvolutionTracker` bos dizi uyarilari ayri bir hata olarak devam ediyor.
+
+### 2026-11-26 - Scissor Snip baslangic yetenegi tamamlandi
+
+- Kök neden bulundu: `BP_Abilities_Component > SetStartingAbility` içindeki `Switch on E_ActiveAbilities` düğümünün `Scissor Snip` çıkışı boştu.
+- `Level Up Scissor Snip` çağrısı eklendi ve Scissor dalına bağlandı.
+- `BP_Abilities_Component` başarıyla compile edildi; PIE testinde Scissor Snip çalıştı.
