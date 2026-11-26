@@ -2,5 +2,9 @@
 	"FileVersion": 3,
 	"EngineAssociation": "5.8",
 	"Category": "",
-	"Description": ""
+	"Description": "",
+	"Plugins": [
+		{"Name": "ModelContextProtocol", "Enabled": true},
+		{"Name": "AllToolsets", "Enabled": true}
+	]
 }
