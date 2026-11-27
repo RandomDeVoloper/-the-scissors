@@ -644,6 +644,298 @@ def build_candle():
     return finalize(ob, "SM_Candle", tex=512, extra_export=[fl])
 
 
+# ======================= BATCH 2 =======================
+METAL = (0.55, 0.57, 0.62)
+PEARL = (0.86, 0.84, 0.80)
+CREAM = (0.90, 0.82, 0.70)
+SPONGE = (0.46, 0.21, 0.07)
+CHERRY = (0.55, 0.03, 0.04)
+BUTTONS = dict(Pink=(0.80, 0.30, 0.40), Mint=(0.25, 0.60, 0.45), Yellow=(0.85, 0.60, 0.12),
+               Blue=(0.20, 0.38, 0.70))
+
+
+def recolor_type(tname, col):
+    def f(o):
+        layer = o.data.attributes["Col"]
+        ids = {i for i, m in enumerate(o.data.materials) if m.name.split(".")[0].endswith("_" + tname)}
+        for p in o.data.polygons:
+            if p.material_index in ids:
+                for li in p.loop_indices:
+                    layer.data[li].color = (*col, 1.0)
+    return f
+
+
+def box(b, center, size, t, col, rot=(0, 0, 0)):
+    M = (Matrix.Translation(center) @ Matrix.Rotation(rot[2], 4, "Z") @ Matrix.Rotation(rot[1], 4, "Y")
+         @ Matrix.Rotation(rot[0], 4, "X") @ Matrix.Diagonal((*size, 1.0)))
+    res = bmesh.ops.create_cube(b.bm, size=1.0, matrix=M)
+    b._paint(b._faces_of(res["verts"]), t, col)
+
+
+def prism_y(b, poly_xz, y0, y1, t, col):
+    """convex polygon in the XZ plane extruded along Y."""
+    fs = b.prism(poly_xz, y0, y1, t, col)
+    vs = {v for f in fs for v in f.verts}
+    for v in vs:
+        x, y, z = v.co
+        v.co = Vector((x, z, y))
+
+
+def torus(b, center, R, r, t, col, seg=20, sides=6, zscale=1.0):
+    pts = [(center[0] + R * math.cos(i / seg * 2 * math.pi), center[1] + R * math.sin(i / seg * 2 * math.pi),
+            center[2]) for i in range(seg + 1)]
+    n0 = len(b.bm.verts)
+    b.tube(pts, r, t, col, sides=sides, cap=False)
+    if zscale != 1.0:
+        b.bm.verts.ensure_lookup_table()
+        for v in b.bm.verts[n0:]:
+            v.co.z = center[2] + (v.co.z - center[2]) * zscale
+
+
+def drips_ring(b, rnd, R, z, col, n=14, rmin=0.12, rmax=0.45, thick=0.09):
+    """icing rim + hanging drops around a cylinder edge."""
+    torus(b, (0, 0, z), R, thick, "icing", col, seg=max(16, n * 2), sides=6)
+    for i in range(n):
+        a = i / n * 2 * math.pi + rnd.uniform(-0.15, 0.15)
+        ln = rnd.uniform(rmin, rmax)
+        b.blob((R * math.cos(a), R * math.sin(a), z - ln / 2), (thick * 0.95, thick * 0.95, ln / 2 + 0.04),
+               "icing", col)
+
+
+def build_needle():
+    """Giant sewing needle, ~8 m. Pivot at the tip: sink the tip into the floor and tilt in UE."""
+    coll = fresh_scene()
+    b, s = Builder(), Builder()
+    L = 6.6
+    prof = lambda u: 0.02 + 0.17 * min(1.0, u / 0.35) ** 0.8
+    pts = [(0, 0, L * u) for u in [i / 24 for i in range(25)]]
+    b.tube(pts, lambda u: prof(u), "metal", METAL, sides=12)
+    # eye: stadium loop on the XZ plane
+    hw, z0, z1, tr = 0.17, L - 0.15, L + 1.45, 0.1
+    eye = []
+    for i in range(13):  # bottom arc
+        a = math.pi + i / 12 * math.pi
+        eye.append((hw * math.cos(a), 0, z0 + 0.25 + 0.25 * math.sin(a)))
+    for i in range(13):  # top arc
+        a = i / 12 * math.pi
+        eye.append((hw * math.cos(a), 0, z1 - 0.25 + 0.25 * math.sin(a)))
+    eye.append(eye[0])
+    b.tube(eye, tr, "metal", METAL, sides=8, cap=False)
+    # red thread through the eye, falling to the floor
+    th = [(-0.6, 0.25, 0.04), (-0.55, 0.3, 1.8), (-0.3, 0.2, 4.6), (0, 0.0, L + 0.6), (0.12, -0.05, L + 0.75),
+          (0.35, -0.12, L + 0.5), (0.8, -0.3, 3.5), (1.1, -0.35, 1.2), (1.5, -0.5, 0.05), (2.2, -0.3, 0.04)]
+    fine = []
+    for i in range(len(th) - 1):
+        for k in range(6):
+            tt = k / 6
+            fine.append(tuple(th[i][j] * (1 - tt) + th[i + 1][j] * tt for j in range(3)))
+    fine.append(th[-1])
+    s.tube(fine, 0.045, "thread", THREADS["red"], sides=6)
+    obh, obs = b.to_object("hard", coll), s.to_object("soft", coll)
+    for o in (obh, obs):
+        assign_types(o, "P_Needle")
+    ob = join([obh, obs], "SM_Needle")
+    return finalize(ob, "SM_Needle", tex=1024)
+
+
+def build_pin():
+    """Pearl-head pin, 3.2 m. Pivot at the tip. Variants: pearl / red / blue head."""
+    coll = fresh_scene()
+    b = Builder()
+    L = 3.0
+    pts = [(0, 0, L * i / 10) for i in range(11)]
+    b.tube(pts, lambda u: 0.006 + 0.034 * min(1.0, u / 0.12), "metal", METAL, sides=8)
+    b.blob((0, 0, L + 0.13), (0.2, 0.2, 0.2), "icing", PEARL, subdiv=2)
+    ob = b.to_object("SM_Pin", coll)
+    assign_types(ob, "P_Pin")
+    variants = {"": None, "_Red": recolor_type("icing", (0.65, 0.06, 0.06)),
+                "_Blue": recolor_type("icing", (0.15, 0.25, 0.65))}
+    return finalize(ob, "SM_Pin", tex=512, variants=variants)
+
+
+def build_button():
+    """Four-hole sewing button, 0.8 m wide, with a stitched thread cross."""
+    coll = fresh_scene()
+    rnd = random.Random(9)
+    b, s = Builder(), Builder()
+    R = 0.4
+    col = BUTTONS["Pink"]
+    b.cyl(R, R * 0.97, 0.0, 0.1, "wax", col, seg=24)
+    b.ring(R * 0.78, R, 0, 2 * math.pi, 0.08, 0.15, "wax", col, seg=24, closed=True)
+    # holes: painted dark discs (type "stone" so recolouring the body leaves them alone)
+    for hx, hy in ((1, 1), (-1, 1), (-1, -1), (1, -1)):
+        s.cyl(0.055, 0.055, 0.085, 0.103, "stone", (0.05, 0.035, 0.03), seg=10, loc=(hx * 0.11, hy * 0.11))
+    tc = (0.85, 0.75, 0.55)
+    for a, c in (((0.11, 0.11), (-0.11, -0.11)), ((-0.11, 0.11), (0.11, -0.11))):
+        pts = [(a[0] + (c[0] - a[0]) * k / 8, a[1] + (c[1] - a[1]) * k / 8, 0.12 + 0.03 * math.sin(math.pi * k / 8))
+               for k in range(9)]
+        s.tube(pts, 0.025, "thread", tc, sides=5)
+    obh, obs = b.to_object("hard", coll), s.to_object("soft", coll)
+    for o in (obh, obs):
+        assign_types(o, "P_Button")
+    bevel_apply(obh, 0.02, 2, 40)
+    ob = join([obh, obs], "SM_Button")
+    variants = {"": None}
+    for k in ("Mint", "Yellow", "Blue"):
+        variants["_" + k] = recolor_type("wax", BUTTONS[k])
+    return finalize(ob, "SM_Button", tex=512, variants=variants)
+
+
+HOUSES = {
+    "A": dict(w=2.6, d=2.2, h=1.5, rh=1.2, chimney=0.6, windows=1, seed=21),
+    "B": dict(w=2.0, d=2.6, h=2.3, rh=1.3, chimney=-0.4, windows=2, seed=22),
+}
+
+
+def build_ginger_house(var="A"):
+    p = HOUSES[var]
+    coll = fresh_scene()
+    rnd = random.Random(p["seed"])
+    b, s = Builder(), Builder()
+    w, d, h, rh = p["w"], p["d"], p["h"], p["rh"]
+    gc = C["ginger"]
+    ic = C["icing"]
+    # body with gable ends (pentagon extruded along Y)
+    prism_y(b, [(-w / 2, 0), (w / 2, 0), (w / 2, h), (0, h + rh), (-w / 2, h)], -d / 2, d / 2, "ginger", gc)
+    # roof panels with icing "snow"
+    half = w / 2 + 0.25
+    ang = math.atan2(rh, w / 2)
+    plen = math.hypot(w / 2, rh) + 0.3
+    for side in (-1, 1):
+        cx = side * (plen / 2 - 0.18) * math.cos(ang)
+        cz = h + rh - (plen / 2 - 0.18) * math.sin(ang) + 0.08
+        box(b, (cx, 0, cz), (plen, d + 0.5, 0.14), "ginger", jitter(gc, 0.06, rnd), rot=(0, side * ang, 0))
+        nz = Vector((side * math.sin(ang), 0, math.cos(ang)))
+        box(b, Vector((cx, 0, cz)) + nz * 0.1, (plen * 0.96, d + 0.56, 0.07), "icing", ic, rot=(0, side * ang, 0))
+        # eave drips
+        ex = side * (w / 2 + 0.25)
+        ez = h - 0.03
+        for k in range(9):
+            y = -d / 2 - 0.2 + (d + 0.4) * (k + 0.5) / 9
+            ln = rnd.uniform(0.12, 0.35)
+            s.blob((ex, y, ez - ln / 2), (0.07, 0.07, ln / 2 + 0.04), "icing", ic)
+    # ridge piping + gumdrops
+    s.tube([(0, -d / 2 - 0.28, h + rh + 0.2), (0, d / 2 + 0.28, h + rh + 0.2)], 0.08, "icing", ic)
+    gum = [THREADS["pink"], (0.3, 0.6, 0.45), THREADS["yellow"], THREADS["red"]]
+    for k in range(4):
+        y = -d / 2 + d * (k + 0.5) / 4
+        s.blob((0, y, h + rh + 0.32), (0.13, 0.13, 0.11), "wax", gum[k % 4])
+    # chimney
+    cxp = p["chimney"]
+    czb = h + rh * (1 - abs(cxp) / (w / 2))
+    box(b, (cxp, d * 0.2, czb + 0.35), (0.35, 0.35, 0.9), "ginger", jitter(gc, 0.1, rnd))
+    box(s, (cxp, d * 0.2, czb + 0.83), (0.42, 0.42, 0.08), "icing", ic)
+    # door (front = -Y), arched with icing outline
+    door = [(-0.32, 0.0), (0.32, 0.0), (0.32, 0.75)] + \
+           [(0.32 * math.cos(a), 0.75 + 0.32 * math.sin(a)) for a in [i / 6 * math.pi for i in range(1, 6)]] + \
+           [(-0.32, 0.75)]
+    prism_y(b, door, -d / 2 - 0.04, -d / 2 + 0.02, "ginger", tuple(c * 0.45 for c in gc))
+    s.tube([(x, -d / 2 - 0.05, z) for x, z in door[1:] + door[:1]], 0.04, "icing", ic, cap=False)
+    s.blob((0.2, -d / 2 - 0.07, 0.45), (0.05, 0.05, 0.05), "wax", THREADS["yellow"])
+    # candy windows (front and sides)
+    wins = []
+    rows = [h * 0.55] if p["windows"] == 1 else [h * 0.42, h * 0.8]
+    for z in rows:
+        for x in (-w * 0.3, w * 0.3):
+            if abs(x) < 0.45 and z < 1.2:
+                continue
+            wins.append(("front", x, z))
+        wins.append(("side", 0.0, z))
+    for kind, x, z in wins:
+        sz = 0.34
+        if kind == "front":
+            box(b, (x, -d / 2 - 0.02, z), (sz, 0.06, sz), "wax", (0.95, 0.65, 0.2))
+            for dx, dz, sx, szz in ((0, sz / 2, sz + 0.1, 0.06), (0, -sz / 2, sz + 0.1, 0.06),
+                                    (sz / 2, 0, 0.06, sz), (-sz / 2, 0, 0.06, sz), (0, 0, 0.04, sz), (0, 0, sz, 0.04)):
+                box(s, (x + dx, -d / 2 - 0.06, z + dz), (sx, 0.05, szz), "icing", ic)
+        else:
+            for sd in (-1, 1):
+                box(b, (sd * (w / 2 + 0.02), x, z), (0.06, sz, sz), "wax", (0.95, 0.65, 0.2))
+                box(s, (sd * (w / 2 + 0.06), x, z), (0.05, sz + 0.1, 0.05), "icing", ic)
+                box(s, (sd * (w / 2 + 0.06), x, z), (0.05, 0.05, sz + 0.1), "icing", ic)
+    # icing trim along the base and the gable edges
+    for y in (-d / 2 - 0.03, d / 2 + 0.03):
+        s.tube([(-w / 2, y, 0.06), (w / 2, y, 0.06)], 0.05, "icing", ic)
+        s.tube([(-w / 2 - 0.02, y, h), (0, y, h + rh), (w / 2 + 0.02, y, h)], 0.06, "icing", ic)
+    # zigzag icing band on the walls
+    zz = []
+    for k in range(17):
+        zz.append((-w / 2 + w * k / 16, -d / 2 - 0.035, h * 0.18 + (0.08 if k % 2 else -0.08)))
+    s.tube(zz, 0.035, "icing", ic)
+    obh, obs = b.to_object("hard", coll), s.to_object("soft", coll)
+    for o in (obh, obs):
+        assign_types(o, f"P_House{var}")
+    bevel_apply(obh, 0.04, 2, 40)
+    name = f"SM_GingerHouse_{var}"
+    ob = join([obh, obs], name)
+    return finalize(ob, name, tex=1024)
+
+
+def build_cake_tower():
+    """3-tier cake tower landmark (~5.5 m) with arched door, turrets, cream swirl and cherry."""
+    coll = fresh_scene()
+    rnd = random.Random(31)
+    b, s = Builder(), Builder()
+    ic = CREAM
+    tiers = [(2.3, 0.0, 1.5), (1.7, 1.5, 2.7), (1.15, 2.7, 3.65)]
+    for R, z0, z1 in tiers:
+        b.cyl(R, R * 0.98, z0, z1, "ginger", jitter(SPONGE, 0.05, rnd), seg=28)
+        drips_ring(s, rnd, R * 0.99, z1, ic, n=int(R * 9), rmax=0.55 if R > 2 else 0.4, thick=0.1)
+        # icing disc on top of the tier
+        b.cyl(R * 0.99, R * 0.99, z1, z1 + 0.06, "icing", ic, seg=28)
+        # pearl row at the base
+        nb = int(2 * math.pi * R / 0.32)
+        for i in range(nb):
+            a = i / nb * 2 * math.pi
+            s.blob((R * math.cos(a), R * math.sin(a), z0 + 0.08), (0.1, 0.1, 0.09), "icing", ic)
+    # gingerbread cross decorations + windows on tiers
+    for R, z0, z1 in tiers:
+        n = 6 if R > 2 else 5
+        for i in range(n):
+            a = -math.pi / 2 + (i + 0.5) / n * 2 * math.pi
+            if R > 2 and abs(a + math.pi / 2) < 0.6:
+                continue
+            zc = (z0 + z1) / 2
+            px, py = (R + 0.01) * math.cos(a), (R + 0.01) * math.sin(a)
+            if i % 2 == 0:  # window: candy pane in icing frame
+                box(b, (px, py, zc), (0.06, 0.38, 0.45), "wax", (0.95, 0.62, 0.18), rot=(0, 0, a))
+                box(s, (px + 0.03 * math.cos(a), py + 0.03 * math.sin(a), zc + 0.27), (0.06, 0.5, 0.06), "icing", ic, rot=(0, 0, a))
+                box(s, (px + 0.03 * math.cos(a), py + 0.03 * math.sin(a), zc - 0.27), (0.06, 0.5, 0.06), "icing", ic, rot=(0, 0, a))
+            else:           # cookie cross
+                box(b, (px, py, zc), (0.08, 0.14, 0.5), "ginger", (0.55, 0.26, 0.09), rot=(0, 0, a))
+                box(b, (px, py, zc + 0.05), (0.08, 0.42, 0.14), "ginger", (0.55, 0.26, 0.09), rot=(0, 0, a))
+    # arched door on the bottom tier, facing -Y
+    R0 = tiers[0][0]
+    door = [(-0.5, 0.0), (0.5, 0.0), (0.5, 0.75)] + \
+           [(0.5 * math.cos(a), 0.75 + 0.5 * math.sin(a)) for a in [i / 8 * math.pi for i in range(1, 8)]] + [(-0.5, 0.75)]
+    prism_y(b, door, -R0 - 0.06, -R0 + 0.25, "ginger", (0.06, 0.03, 0.015))
+    s.tube([(x * 1.08, -R0 - 0.08, z * 1.04) for x, z in door[1:] + door[:1]], 0.07, "icing", ic, cap=False)
+    # side turrets with cream tops
+    for sd in (-1, 1):
+        tx, ty = sd * (R0 + 0.15), 0.35
+        b.cyl(0.55, 0.5, 0.0, 1.9, "ginger", jitter(SPONGE, 0.08, rnd), seg=16, loc=(tx, ty))
+        for k in range(4):
+            torus(s, (tx, ty, 1.95 + k * 0.17), 0.45 - k * 0.1, 0.12 - k * 0.015, "icing", ic, seg=14, sides=6)
+        s.blob((tx, ty, 2.6), (0.08, 0.08, 0.1), "icing", ic, stretch_top=2.0)
+    # cream swirl on top + cherry
+    zt = tiers[-1][2] + 0.06
+    for k in range(6):
+        torus(s, (0, 0, zt + 0.18 + k * 0.26), 0.85 - k * 0.14, 0.22 - k * 0.022, "icing", ic, seg=20, sides=7)
+    s.blob((0, 0, zt + 1.78), (0.12, 0.12, 0.14), "icing", ic, stretch_top=2.2)
+    s.blob((0, 0, zt + 2.12), (0.32, 0.32, 0.3), "wax", CHERRY, subdiv=2)
+    s.tube([(0, 0, zt + 2.38), (0.05, 0.02, zt + 2.6), (0.18, 0.05, zt + 2.8)], 0.03, "wood", (0.15, 0.25, 0.05), sides=5)
+    # strawberries on the second tier
+    for a in (0.7, 2.6, 4.4):
+        R1, z1 = tiers[1][0], tiers[1][2]
+        s.blob(((R1 - 0.2) * math.cos(a), (R1 - 0.2) * math.sin(a), z1 + 0.3), (0.22, 0.22, 0.28), "wax", (0.7, 0.05, 0.05))
+    obh, obs = b.to_object("hard", coll), s.to_object("soft", coll)
+    for o in (obh, obs):
+        assign_types(o, "P_Cake")
+    bevel_apply(obh, 0.05, 2, 40)
+    ob = join([obh, obs], "SM_CakeTower")
+    return finalize(ob, "SM_CakeTower", tex=2048)
+
+
 # ======================= PREVIEW =======================
 def append_objects(blend):
     with bpy.data.libraries.load(blend, link=False) as (src, dst):
@@ -706,6 +998,33 @@ def preview():
         lt.energy, lt.color, lt.shadow_soft_size = 900, (1.0, 0.6, 0.3), 0.3
         lo = bpy.data.objects.new("candleL", lt); lo.location = (x, y, GINGER_TOP + 1.9)
         coll.objects.link(lo)
+    # ---- batch 2 props, if built ----
+    b2 = {}
+    for n in ("SM_Needle", "SM_Pin", "SM_Button", "SM_GingerHouse_A", "SM_GingerHouse_B", "SM_CakeTower"):
+        if os.path.exists(B(n)):
+            b2[n] = [o for o in append_objects(B(n)) if o.type == "MESH"][0]
+    def place(n, loc, rot=(0, 0, 0), tex=None):
+        o = b2[n].copy()
+        if tex:
+            o.data = b2[n].data.copy()
+            o.data.materials[0] = variant_mat(b2[n].data.materials[0], tex)
+        o.location, o.rotation_euler = loc, rot
+        coll.objects.link(o)
+        return o
+    placed2 = []
+    if b2:
+        placed2 += [
+            place("SM_CakeTower", (2.5, 15.2, 0), (0, 0, 0.15)),
+            place("SM_GingerHouse_A", (-8.5, 13.6, GINGER_TOP * 0), (0, 0, -0.5)),
+            place("SM_GingerHouse_B", (11.5, 11.2, 0), (0, 0, 0.6)),
+            place("SM_Needle", (-4.0, 1.5, -0.6), (math.radians(-12), math.radians(-14), 0)),
+            place("SM_Pin", (5.2, -2.0, -0.3), (math.radians(70), 0, math.radians(30))),
+            place("SM_Pin", (6.0, -3.6, -0.3), (math.radians(65), 0, math.radians(55)), "T_SM_Pin_Red_D.png"),
+        ]
+        for (x, y), tx in zip([(-3.2, -5.0), (-2.0, -6.0), (-4.4, -6.3), (2.4, -7.6), (0.6, -4.2)],
+                              ["T_SM_Button_D.png", "T_SM_Button_Mint_D.png", "T_SM_Button_Yellow_D.png",
+                               "T_SM_Button_Blue_D.png", "T_SM_Button_Mint_D.png"]):
+            placed2.append(place("SM_Button", (x, y, 0.0), (0, 0, rnd.uniform(0, 6.28)), tx))
     # doll-sized reference capsule (1.8 m)
     bpy.ops.mesh.primitive_cylinder_add(radius=0.3, depth=1.8, location=(0, 0, 0.9))
     ref = bpy.context.active_object
@@ -760,6 +1079,34 @@ def preview():
     ref.location = (5.0, -5.0, 0.9)
     sc.render.filepath = os.path.join(OUT, "Preview", "props_closeup.png")
     bpy.ops.render.render(write_still=True)
+    if b2:
+        # batch 2 line-up on a clean spot of the plank floor
+        for o in coll.objects:
+            if o.type == "MESH" and not o.name.startswith(("SM_ArenaFloor", "SM_ArenaBorder")):
+                o.hide_render = True
+        ref.hide_render = False
+        lineup = [("SM_CakeTower", (0.0, 3.5, 0), (0, 0, 0), None),
+                  ("SM_GingerHouse_A", (-5.2, 2.2, 0), (0, 0, 0.35), None),
+                  ("SM_GingerHouse_B", (5.0, 2.2, 0), (0, 0, -0.35), None),
+                  ("SM_Needle", (-7.6, -0.6, 0), (0, 0, 0.3), None),
+                  ("SM_Pin", (7.2, -1.2, 0), (0, 0, 0), None),
+                  ("SM_Pin", (7.9, -0.4, 0), (0, 0, 0), "T_SM_Pin_Red_D.png"),
+                  ("SM_Pin", (8.6, 0.4, 0), (0, 0, 0), "T_SM_Pin_Blue_D.png")]
+        for i, tx in enumerate(["T_SM_Button_D.png", "T_SM_Button_Mint_D.png", "T_SM_Button_Yellow_D.png",
+                                "T_SM_Button_Blue_D.png"]):
+            lineup.append(("SM_Button", (-1.8 + i * 1.2, -2.6, 0.0), (math.radians(-35), 0, 0), tx))
+        for n, loc, rot, tx in lineup:
+            o = place(n, loc, rot, tx)
+            if n == "SM_Button":
+                o.location.z = 0.32
+        ref.location = (-2.6, -0.6, 0.9)
+        cam.ortho_scale = 19
+        tgt.location = (0.3, 0.8, 2.6)
+        co.location = (0.3, 0.8 - 40 * math.cos(math.radians(28)), 2.6 + 40 * math.sin(math.radians(28)))
+        for lo in [o for o in coll.objects if o.name.startswith("candleL")]:
+            lo.hide_render = True
+        sc.render.filepath = os.path.join(OUT, "Preview", "props2_lineup.png")
+        bpy.ops.render.render(write_still=True)
     print("[arena] preview done with", eng)
 
 
@@ -768,7 +1115,10 @@ if __name__ == "__main__":
     if not argv:
         argv = ["build", "floor", "border", "spool", "candle"]
     if argv[0] == "build":
-        fns = dict(floor=build_floor, border=build_border, spool=build_spool, candle=build_candle)
+        fns = dict(floor=build_floor, border=build_border, spool=build_spool, candle=build_candle,
+                   needle=build_needle, pin=build_pin, button=build_button,
+                   houseA=lambda: build_ginger_house("A"), houseB=lambda: build_ginger_house("B"),
+                   cake=build_cake_tower)
         for n in argv[1:]:
             fns[n]()
     elif argv[0] == "preview":
