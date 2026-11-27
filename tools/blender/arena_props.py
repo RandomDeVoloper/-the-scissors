@@ -138,16 +138,22 @@ class Builder:
                     v.co.z = loc[2] + (v.co.z - loc[2]) * stretch_top
         self._paint(self._faces_of(res["verts"]), t, col)
 
-    def tube(self, pts, radius, t, col, sides=6, cap=True):
+    def tube(self, pts, radius, t, col, sides=6, cap=True, col_fn=None):
+        """swept tube (parallel-transport frames). col_fn(u, k) -> rgb paints per face."""
         bm = self.bm
         pts = [Vector(p) for p in pts]
         rings = []
+        Tp = Np = None
         for i, p in enumerate(pts):
             a = pts[max(i - 1, 0)]
             b = pts[min(i + 1, len(pts) - 1)]
             T = (b - a).normalized()
-            up = Vector((0, 0, 1)) if abs(T.z) < 0.9 else Vector((1, 0, 0))
-            N = T.cross(up).normalized()
+            if Np is None:
+                up = Vector((0, 0, 1)) if abs(T.z) < 0.9 else Vector((1, 0, 0))
+                N = T.cross(up).normalized()
+            else:
+                N = (Tp.rotation_difference(T) @ Np).normalized()
+            Tp, Np = T, N
             B = T.cross(N).normalized()
             rr = radius(i / (len(pts) - 1)) if callable(radius) else radius
             rings.append([bm.verts.new(p + (N * math.cos(k * 2 * math.pi / sides) +
@@ -163,6 +169,17 @@ class Builder:
             fs.append(bm.faces.new(list(reversed(rings[0]))))
             fs.append(bm.faces.new(rings[-1]))
         self._paint(fs, t, col)
+        if col_fn:
+            n = len(rings) - 1
+            for i in range(n):
+                for k in range(sides):
+                    self._paint([fs[i * sides + k]], t, col_fn(i / max(n - 1, 1), k / sides))
+
+    def xform(self, n0, M):
+        """transform every vertex created after index n0."""
+        self.bm.verts.ensure_lookup_table()
+        for v in self.bm.verts[n0:]:
+            v.co = M @ v.co
 
     def to_object(self, name, coll):
         me = bpy.data.meshes.new(name)
@@ -936,6 +953,376 @@ def build_cake_tower():
     return finalize(ob, "SM_CakeTower", tex=2048)
 
 
+# ======================= BATCH 3 (surroundings) =======================
+PLUM = (0.10, 0.06, 0.10)
+GLASS = (0.10, 0.13, 0.20)
+LEAF = (0.10, 0.30, 0.06)
+FABRICS = dict(Teal=(0.08, 0.32, 0.30), Purple=(0.28, 0.12, 0.38), Red=(0.50, 0.07, 0.08),
+               Pink=(0.75, 0.32, 0.42))
+
+
+def stripes(c1, c2, freq=6.0, twist=1.0):
+    """spiral candy stripes for Builder.tube(col_fn=...)."""
+    return lambda u, k: c1 if math.sin(2 * math.pi * (u * freq + k * twist)) > 0 else c2
+
+
+def spiral_pts(cx, cz, y, r0, turns, sign=1, n=40, scale=0.12):
+    pts = []
+    for i in range(n):
+        th = i / (n - 1) * turns * 2 * math.pi
+        r = r0 + scale * th / (2 * math.pi)
+        pts.append((cx + sign * r * math.cos(th), y, cz + r * math.sin(th)))
+    return pts
+
+
+MIRRORS = {"A": "arch", "B": "oval"}
+
+
+def build_mirror(var="A"):
+    """Ornate standing mirror. Glass faces -Y (swap its UE material for a reflective one if wanted)."""
+    coll = fresh_scene()
+    rnd = random.Random(41)
+    b, s = Builder(), Builder()
+    ic, pk = C["icing"], THREADS["pink"]
+    if MIRRORS[var] == "arch":
+        W, H0, z0 = 1.1, 2.4, 0.5          # half width, straight height, bottom
+        outline = [(W, z0), (W, z0 + H0)] + [(W * math.cos(a), z0 + H0 + W * math.sin(a))
+                                             for a in [i / 12 * math.pi for i in range(1, 12)]] + \
+                  [(-W, z0 + H0), (-W, z0)]
+        top = z0 + H0 + W
+        feet = [(-W * 0.8, 0), (W * 0.8, 0)]
+    else:
+        RX, RZ, zc = 1.0, 1.55, 2.25
+        outline = [(RX * math.cos(a), zc + RZ * math.sin(a)) for a in [i / 28 * 2 * math.pi for i in range(28)]]
+        top = zc + RZ
+        z0 = zc - RZ
+        feet = [(0, 0)]
+    # back plate, glass, frame
+    big = [(x * 1.08, (z - (z0 + top) / 2) * 1.06 + (z0 + top) / 2) for x, z in outline]
+    prism_y(b, big, 0.0, 0.18, "wood", PLUM)
+    prism_y(b, outline, -0.04, 0.0, "metal", GLASS)
+    loop = [(x * 1.04, -0.08, (z - (z0 + top) / 2) * 1.03 + (z0 + top) / 2) for x, z in outline]
+    s.tube(loop + loop[:1], 0.13, "wood", jitter(PLUM, 0.1, rnd), sides=8, cap=False)
+    inner = [(x * 0.97, -0.12, (z - (z0 + top) / 2) * 0.98 + (z0 + top) / 2) for x, z in outline]
+    s.tube(inner + inner[:1], 0.04, "icing", ic, sides=5, cap=False)
+    # crown ornament: two scrolls, a heart-ish gem and pearl beads
+    for sd in (-1, 1):
+        s.tube(spiral_pts(sd * 0.45, top + 0.25, -0.08, 0.05, 1.6, sign=sd), 0.06, "wood", PLUM, sides=6)
+        s.tube(spiral_pts(sd * 0.95, (z0 + top) / 2, -0.1, 0.04, 1.3, sign=-sd, scale=0.1), 0.05, "wood", PLUM, sides=6)
+    s.blob((0, -0.12, top + 0.45), (0.2, 0.1, 0.24), "wax", pk, subdiv=2)
+    for i in range(7):
+        a = math.pi * (0.15 + 0.7 * i / 6)
+        s.blob((0.75 * math.cos(a), -0.14, top - 0.15 + 0.35 * math.sin(a)), (0.06, 0.06, 0.06), "icing", ic)
+    # side gems
+    for sd in (-1, 1):
+        s.blob((sd * (outline[0][0] if MIRRORS[var] == "arch" else 1.04), -0.16, (z0 + top) / 2 - 0.5),
+               (0.1, 0.06, 0.12), "wax", pk)
+    # feet / pedestal
+    if MIRRORS[var] == "arch":
+        for fx, _ in feet:
+            box(b, (fx, 0.1, 0.25), (0.25, 0.5, 0.5), "wood", PLUM)
+            b.blob((fx, 0.1, 0.0), (0.2, 0.35, 0.12), "wood", PLUM)
+    else:
+        b.cyl(0.18, 0.14, 0.25, z0 + 0.1, "wood", PLUM, seg=10, loc=(0, 0.09))
+        b.cyl(0.55, 0.45, 0.0, 0.25, "wood", PLUM, seg=16, loc=(0, 0.09))
+    obh, obs = b.to_object("hard", coll), s.to_object("soft", coll)
+    for o in (obh, obs):
+        assign_types(o, f"P_Mirror{var}")
+    bevel_apply(obh, 0.03, 1, 40)
+    name = f"SM_Mirror_{var}"
+    ob = join([obh, obs], name)
+    return finalize(ob, name, tex=1024)
+
+
+def wax_candle(b, s, rnd, x, y, z, R, H):
+    b.cyl(R, R * 0.97, z, z + H, "wax", C["wax"], seg=12, loc=(x, y))
+    for i in range(6):
+        a = i / 6 * 2 * math.pi + rnd.uniform(-0.3, 0.3)
+        ln = rnd.uniform(0.06, 0.3)
+        s.blob((x + R * 0.93 * math.cos(a), y + R * 0.93 * math.sin(a), z + H - ln / 2),
+               (0.04, 0.04, ln / 2 + 0.03), "wax", C["wax"])
+    s.tube([(x, y, z + H - 0.01), (x + 0.005, y, z + H + 0.08)], 0.012, "metal", C["wick"], sides=4)
+
+
+def flame_obj(coll, name, spots):
+    fb = Builder()
+    for x, y, z in spots:
+        fb.blob((x, y, z), (0.05, 0.05, 0.075), "wax", (1, 0.6, 0.2), subdiv=2, stretch_top=2.2)
+    fl = fb.to_object(name, coll)
+    fm = bpy.data.materials.get("M_CandleFlame") or bpy.data.materials.new("M_CandleFlame")
+    fm.use_nodes = True
+    nt = fm.node_tree
+    if not any(n.type == "EMISSION" for n in nt.nodes):
+        em = nt.nodes.new("ShaderNodeEmission")
+        em.inputs["Color"].default_value = (1.0, 0.55, 0.15, 1)
+        em.inputs["Strength"].default_value = 12.0
+        nt.links.new(em.outputs[0], nt.nodes["Material Output"].inputs[0])
+    fl.data.materials.append(fm)
+    for p in fl.data.polygons:
+        p.material_index = 0
+    for a in list(fl.data.color_attributes):
+        fl.data.color_attributes.remove(a)
+    select_only([fl]); bpy.ops.object.shade_smooth()
+    return fl
+
+
+def build_candelabra():
+    """Three-arm brass candelabra, ~2.4 m. Flames exported separately (SM_CandelabraFlames)."""
+    coll = fresh_scene()
+    rnd = random.Random(43)
+    b, s = Builder(), Builder()
+    br = C["brass"]
+    b.cyl(0.55, 0.4, 0.0, 0.12, "metal", br, seg=18)
+    b.cyl(0.3, 0.12, 0.12, 0.3, "metal", br, seg=14)
+    s.tube([(0, 0, 0.3), (0, 0, 1.3)], lambda u: 0.07 + 0.03 * math.sin(u * math.pi * 3) ** 2, "metal", br, sides=10)
+    s.blob((0, 0, 0.75), (0.13, 0.13, 0.1), "metal", br)
+    arms = [(-0.75, 1.55), (0.0, 1.75), (0.75, 1.55)]
+    for x, zc in arms:
+        if x != 0:
+            pts = [(x * (i / 12), 0, 1.2 + (zc - 1.25) * math.sin(i / 12 * math.pi / 2) - 0.25 * math.sin(i / 12 * math.pi))
+                   for i in range(13)]
+            s.tube(pts, 0.045, "metal", br, sides=6)
+        else:
+            s.tube([(0, 0, 1.25), (0, 0, zc - 0.1)], 0.05, "metal", br, sides=6)
+        b.cyl(0.18, 0.2, zc - 0.12, zc, "metal", br, seg=14, loc=(x, 0))
+        torus(s, (x, 0, zc - 0.02), 0.2, 0.03, "metal", br, seg=14, sides=5)
+    flames = []
+    for x, zc in arms:
+        H = 0.55 + (0.1 if x == 0 else 0)
+        wax_candle(b, s, rnd, x, 0, zc, 0.11, H)
+        flames.append((x + 0.005, 0, zc + H + 0.16))
+    obh, obs = b.to_object("hard", coll), s.to_object("soft", coll)
+    for o in (obh, obs):
+        assign_types(o, "P_Candelabra")
+    bevel_apply(obh, 0.015, 1, 40)
+    ob = join([obh, obs], "SM_Candelabra")
+    fl = flame_obj(coll, "SM_CandelabraFlames", flames)
+    return finalize(ob, "SM_Candelabra", tex=1024, extra_export=[fl])
+
+
+def build_lantern():
+    """Candy-cane post (~3.4 m) with a hanging striped lantern. Lantern glass is the striped body:
+    in UE add emissive on the white stripes for the glow."""
+    coll = fresh_scene()
+    b, s = Builder(), Builder()
+    red, white, br = (0.62, 0.05, 0.05), (0.92, 0.88, 0.82), C["brass"]
+    # cane: straight post + hook arc
+    H, Rh = 3.0, 0.45
+    pts = [(0, 0, 0.0)] + [(0, 0, H * i / 20) for i in range(1, 21)]
+    for i in range(1, 19):
+        a = math.pi - i / 18 * math.pi
+        pts.append((Rh + Rh * math.cos(a), 0, H + Rh * math.sin(a)))
+    pts.append((2 * Rh, 0, H - 0.15))
+    s.tube(pts, 0.1, "icing", white, sides=10, col_fn=stripes(red, white, freq=22, twist=1.0))
+    b.cyl(0.42, 0.36, 0.0, 0.14, "ginger", C["ginger"], seg=16)
+    s.tube([(0.36 * math.cos(a / 15 * 2 * math.pi), 0.36 * math.sin(a / 15 * 2 * math.pi), 0.14) for a in range(16)],
+           0.04, "icing", C["icing"], sides=5, cap=False)
+    # lantern hanging from the hook end
+    lx, ltop = 2 * Rh, H - 0.45
+    s.tube([(lx, 0, H - 0.15), (lx, 0, ltop)], 0.018, "metal", (0.1, 0.08, 0.06), sides=4)
+    torus(s, (lx, 0, ltop - 0.02), 0.06, 0.02, "metal", br, seg=10, sides=4)
+    b.cyl(0.12, 0.32, ltop - 0.22, ltop - 0.05, "metal", br, seg=14, loc=(lx, 0))
+    zb0, zb1 = ltop - 1.0, ltop - 0.22
+    nb = 8
+    for i in range(nb):
+        z0 = zb0 + (zb1 - zb0) * i / nb
+        z1 = zb0 + (zb1 - zb0) * (i + 1) / nb
+        bul = lambda z: 0.24 + 0.1 * math.sin(math.pi * (z - zb0) / (zb1 - zb0))
+        b.cyl(bul(z0), bul(z1), z0, z1, "wax", red if i % 2 else white, seg=16, loc=(lx, 0))
+    b.cyl(0.3, 0.14, zb0 - 0.14, zb0, "metal", br, seg=14, loc=(lx, 0))
+    s.blob((lx, 0, zb0 - 0.2), (0.05, 0.05, 0.08), "metal", br)
+    obh, obs = b.to_object("hard", coll), s.to_object("soft", coll)
+    for o in (obh, obs):
+        assign_types(o, "P_Lantern")
+    bevel_apply(obh, 0.02, 1, 40)
+    ob = join([obh, obs], "SM_CandyCaneLantern")
+    return finalize(ob, "SM_CandyCaneLantern", tex=1024)
+
+
+def build_strawberry():
+    """Giant strawberry, ~1.1 m."""
+    coll = fresh_scene()
+    rnd = random.Random(47)
+    b = Builder()
+    n0 = len(b.bm.verts)
+    b.blob((0, 0, 0.5), (0.48, 0.48, 0.5), "wax", (0.62, 0.04, 0.04), subdiv=3)
+    b.bm.verts.ensure_lookup_table()
+    for v in b.bm.verts[n0:]:   # heart / cone shape: narrow towards the bottom
+        k = 0.45 + 0.55 * (v.co.z / 1.0) ** 0.6
+        v.co.x *= k
+        v.co.y *= k
+        if v.co.z < 0.15:
+            v.co.z = 0.15 - (0.15 - v.co.z) * 0.6
+    # seeds
+    for i in range(46):
+        a = rnd.uniform(0, 2 * math.pi)
+        z = rnd.uniform(0.18, 0.85)
+        k = 0.45 + 0.55 * z ** 0.6
+        r = 0.48 * k * math.sqrt(max(0.0, 1 - ((z - 0.5) / 0.5) ** 2)) + 0.005
+        b.blob((r * math.cos(a), r * math.sin(a), z), (0.03, 0.03, 0.045), "icing", (0.9, 0.75, 0.25), subdiv=0)
+    # leaves + stem
+    for i in range(6):
+        a = i / 6 * 2 * math.pi
+        n1 = len(b.bm.verts)
+        b.blob((0.18, 0, 0), (0.22, 0.09, 0.03), "wood", jitter(LEAF, 0.1, rnd))
+        b.xform(n1, Matrix.Translation((0, 0, 0.98)) @ Matrix.Rotation(a, 4, "Z") @ Matrix.Rotation(0.35, 4, "Y"))
+    b.tube([(0, 0, 1.0), (0.02, 0, 1.15), (0.08, 0.02, 1.25)], 0.04, "wood", LEAF, sides=5)
+    ob = b.to_object("SM_Strawberry", coll)
+    assign_types(ob, "P_Strawberry")
+    return finalize(ob, "SM_Strawberry", tex=512)
+
+
+def build_fabric_roll():
+    """Bolt of fabric lying along X (2.4 m), with a draped loose end. Colours: teal/purple/red/pink."""
+    coll = fresh_scene()
+    rnd = random.Random(53)
+    b, s = Builder(), Builder()
+    R, L = 0.38, 2.4
+    col = FABRICS["Teal"]
+    n0 = len(b.bm.verts)
+    b.cyl(R, R, -L / 2, L / 2, "thread", col, seg=20)
+    # spiral layers on the ends
+    for sd in (-1, 1):
+        for rr in (0.3, 0.22, 0.14):
+            torus(s, (0, 0, sd * (L / 2 + 0.01)), rr, 0.018, "thread", tuple(c * 0.7 for c in col), seg=18, sides=4)
+    b.cyl(0.07, 0.07, -L / 2 - 0.06, L / 2 + 0.06, "wood", (0.45, 0.35, 0.2), seg=10)
+    b.xform(n0, Matrix.Translation((0, 0, R)) @ Matrix.Rotation(math.pi / 2, 4, "Y"))
+    s.xform(0, Matrix.Translation((0, 0, R)) @ Matrix.Rotation(math.pi / 2, 4, "Y"))
+    # draped flap: thin strip going over the front and onto the floor
+    flap = []
+    for i in range(14):
+        tt = i / 13
+        a = math.pi / 2 - tt * math.pi * 0.9
+        if tt < 0.75:
+            y, z = -(R + 0.02) * math.cos(a), R + (R + 0.02) * math.sin(a)
+        else:
+            y, z = -(R + 0.02) - (tt - 0.75) * 2.2, 0.03
+        flap.append((y, z))
+    for i in range(len(flap) - 1):
+        (y0, z0), (y1, z1) = flap[i], flap[i + 1]
+        x0, x1 = -L * 0.42, L * 0.42
+        vs = [b.bm.verts.new(p) for p in ((x0, y0, z0), (x1, y0, z0), (x1, y1, z1), (x0, y1, z1))]
+        vs2 = [b.bm.verts.new((x, y - 0.0, z + 0.025)) for x, y, z in ((x0, y0, z0), (x1, y0, z0), (x1, y1, z1), (x0, y1, z1))]
+        fs = [b.bm.faces.new(vs2), b.bm.faces.new(list(reversed(vs)))]
+        b._paint(fs, "thread", col)
+    obh, obs = b.to_object("hard", coll), s.to_object("soft", coll)
+    for o in (obh, obs):
+        assign_types(o, "P_Fabric")
+    ob = join([obh, obs], "SM_FabricRoll")
+    variants = {"": None}
+    for k in ("Purple", "Red", "Pink"):
+        variants["_" + k] = recolor_type("thread", FABRICS[k])
+    return finalize(ob, "SM_FabricRoll", tex=1024, variants=variants)
+
+
+def build_bookshelf():
+    """Workshop bookcase 3 m x 4.2 m x 0.8 m, filled with books, fabric bolts and spools; icing snow on top."""
+    coll = fresh_scene()
+    rnd = random.Random(59)
+    b, s = Builder(), Builder()
+    W, H, D, T = 3.0, 4.2, 0.8, 0.12
+    wd = (0.16, 0.08, 0.04)
+    box(b, (-W / 2 + T / 2, 0, H / 2), (T, D, H), "wood", wd)
+    box(b, (W / 2 - T / 2, 0, H / 2), (T, D, H), "wood", wd)
+    box(b, (0, D / 2 - 0.03, H / 2), (W, 0.06, H), "wood", tuple(c * 0.7 for c in wd))
+    shelves = [0.15, 1.2, 2.2, 3.2, H - 0.06]
+    for z in shelves:
+        box(b, (0, 0, z), (W, D, T), "wood", jitter(wd, 0.08, rnd))
+    box(b, (0, -0.05, H + 0.12), (W + 0.3, D + 0.2, 0.18), "wood", wd)          # crown
+    box(s, (0, -0.05, H + 0.24), (W + 0.32, D + 0.24, 0.08), "icing", C["icing"])  # icing snow
+    for i in range(16):
+        x = -W / 2 - 0.1 + (W + 0.2) * (i + 0.5) / 16
+        ln = rnd.uniform(0.1, 0.4)
+        s.blob((x, -D / 2 - 0.15, H + 0.2 - ln / 2), (0.07, 0.07, ln / 2 + 0.04), "icing", C["icing"])
+    book_cols = [(0.35, 0.05, 0.06), (0.08, 0.22, 0.18), (0.25, 0.12, 0.35), (0.55, 0.35, 0.1), (0.12, 0.15, 0.35),
+                 (0.6, 0.25, 0.3)]
+    for si, z in enumerate(shelves[:-1]):
+        zb = z + T / 2
+        hmax = shelves[si + 1] - z - T - 0.08
+        x = -W / 2 + T + 0.05
+        mode = si % 3
+        while x < W / 2 - T - 0.2:
+            r = rnd.random()
+            if mode == 1 and r < 0.5:     # fabric bolts standing
+                rr = rnd.uniform(0.14, 0.2)
+                if x + 2 * rr > W / 2 - T:
+                    break
+                b.cyl(rr, rr, zb, zb + hmax * rnd.uniform(0.8, 0.98), "thread",
+                      list(FABRICS.values())[rnd.randrange(4)], seg=10, loc=(x + rr, -0.05))
+                x += 2 * rr + 0.02
+            elif mode == 2 and r < 0.4:   # little spools
+                rr = 0.16
+                b.cyl(rr, rr, zb, zb + 0.06, "wood", C["spoolwood"], seg=10, loc=(x + rr, -0.1))
+                b.cyl(rr * 0.75, rr * 0.75, zb + 0.06, zb + 0.34, "thread",
+                      list(THREADS.values())[rnd.randrange(6)], seg=10, loc=(x + rr, -0.1))
+                b.cyl(rr, rr, zb + 0.34, zb + 0.4, "wood", C["spoolwood"], seg=10, loc=(x + rr, -0.1))
+                x += 2 * rr + 0.04
+            else:                          # books
+                bw = rnd.uniform(0.07, 0.14)
+                bh = hmax * rnd.uniform(0.6, 0.95)
+                tilt = rnd.uniform(-0.12, 0.0) if rnd.random() < 0.15 else 0
+                box(b, (x + bw / 2, -0.02, zb + bh / 2), (bw, D * 0.7, bh), "wax",
+                    jitter(book_cols[rnd.randrange(len(book_cols))], 0.15, rnd), rot=(0, tilt, 0))
+                x += bw + 0.01
+    obh, obs = b.to_object("hard", coll), s.to_object("soft", coll)
+    for o in (obh, obs):
+        assign_types(o, "P_Shelf")
+    bevel_apply(obh, 0.015, 1, 40)
+    ob = join([obh, obs], "SM_Bookshelf")
+    return finalize(ob, "SM_Bookshelf", tex=2048)
+
+
+def build_wall_arch():
+    """Timber frame module 6 m wide x 7 m tall: posts, beam, arch with icing trim and a candy-cane wrap.
+    Pivot bottom-centre, tile along a wall every 6 m."""
+    coll = fresh_scene()
+    rnd = random.Random(61)
+    b, s = Builder(), Builder()
+    W, H, P = 6.0, 7.0, 0.5
+    wd = C["darkwood"]
+    for sx in (-1, 1):
+        box(b, (sx * (W / 2 - P / 2), 0, H / 2), (P, P, H), "wood", jitter(wd, 0.1, rnd))
+        box(b, (sx * (W / 2 - P / 2), 0, 0.2), (P + 0.15, P + 0.15, 0.4), "wood", wd)         # plinth
+        box(b, (sx * (W / 2 - P / 2), 0, H - 0.15), (P + 0.15, P + 0.15, 0.3), "wood", wd)    # capital
+    box(b, (0, 0, H + 0.2), (W + 0.6, P + 0.1, 0.5), "wood", jitter(wd, 0.08, rnd))
+    # arch as segmented blocks along a half ellipse
+    n = 11
+    ax, az, zc = W / 2 - P, 1.6, H - 1.75
+    for i in range(n):
+        a0, a1 = math.pi * i / n, math.pi * (i + 1) / n
+        am = (a0 + a1) / 2
+        x, z = ax * math.cos(am), zc + az * math.sin(am)
+        tang = math.atan2(az * math.cos(am), -ax * math.sin(am))
+        seglen = math.hypot(ax * (math.cos(a1) - math.cos(a0)), az * (math.sin(a1) - math.sin(a0)))
+        box(b, (x, 0, z + 0.15), (seglen + 0.04, P * 0.8, 0.4), "wood", jitter(wd, 0.12, rnd), rot=(0, -tang, 0))
+    # spandrel fill between arch and beam
+    for sx in (-1, 1):
+        box(b, (sx * (W / 2 - P - 0.45), 0.1, H - 0.55), (0.9, 0.2, 0.9), "wood", tuple(c * 0.8 for c in wd))
+    # icing trim along the arch underside and the beam
+    arch = [(ax * 0.96 * math.cos(math.pi * i / 30), -P * 0.42, zc - 0.07 + az * 0.96 * math.sin(math.pi * i / 30))
+            for i in range(31)]
+    s.tube(arch, 0.06, "icing", C["icing"], sides=6)
+    for i in range(12):
+        a = math.pi * (i + 0.5) / 12
+        ln = rnd.uniform(0.1, 0.3)
+        s.blob((ax * 0.95 * math.cos(a), -P * 0.42, zc - 0.1 + az * 0.95 * math.sin(a) - ln / 2),
+               (0.05, 0.05, ln / 2 + 0.03), "icing", C["icing"])
+    s.tube([(-W / 2 - 0.3, -P / 2 - 0.08, H - 0.05), (W / 2 + 0.3, -P / 2 - 0.08, H - 0.05)], 0.07, "icing",
+           C["icing"], sides=6)
+    zz = [(-W / 2 - 0.25 + (W + 0.5) * k / 30, -P / 2 - 0.1, H + 0.2 + (0.12 if k % 2 else -0.12)) for k in range(31)]
+    s.tube(zz, 0.04, "icing", C["icing"], sides=5)
+    # candy-cane ribbon spiralling round the left post
+    px = -(W / 2 - P / 2)
+    rib = [(px + 0.43 * math.cos(t * 0.5), 0.43 * math.sin(t * 0.5), 0.5 + t * (H - 1.2) / 60) for t in range(61)]
+    s.tube(rib, 0.07, "icing", C["icing"], sides=6, col_fn=stripes((0.62, 0.05, 0.05), (0.92, 0.88, 0.82), freq=10))
+    obh, obs = b.to_object("hard", coll), s.to_object("soft", coll)
+    for o in (obh, obs):
+        assign_types(o, "P_Arch", grain=(1.5, 1.5, 0.15))
+    bevel_apply(obh, 0.04, 1, 40)
+    ob = join([obh, obs], "SM_WallArch")
+    return finalize(ob, "SM_WallArch", tex=2048)
+
+
 # ======================= PREVIEW =======================
 def append_objects(blend):
     with bpy.data.libraries.load(blend, link=False) as (src, dst):
@@ -1110,6 +1497,75 @@ def preview():
     print("[arena] preview done with", eng)
 
 
+def preview3():
+    """Line-up of the surroundings batch on the plank floor."""
+    coll = fresh_scene()
+    sc = bpy.context.scene
+    B = lambda n: os.path.join(OUT, "Blend", f"{n}.blend")
+    for o in append_objects(B("SM_ArenaFloor")):
+        coll.objects.link(o)
+    def get(n):
+        return [o for o in append_objects(B(n)) if o.type == "MESH"]
+    def add(src, loc, rot=0.0, tex=None):
+        o = src.copy()
+        if tex:
+            o.data = src.data.copy()
+            m = src.data.materials[0].copy()
+            m.node_tree.nodes["Image Texture"].image = bpy.data.images.load(
+                os.path.join(OUT, "Textures", tex), check_existing=True)
+            o.data.materials[0] = m
+        o.location, o.rotation_euler.z = loc, rot
+        coll.objects.link(o)
+        return o
+    arch = get("SM_WallArch")[0]
+    for x in (-6.0, 0.0, 6.0):
+        add(arch, (x, 6.5, 0))
+    add(get("SM_Bookshelf")[0], (-6.0, 5.6, 0))
+    add(get("SM_Mirror_A")[0], (0.0, 5.8, 0))
+    add(get("SM_Mirror_B")[0], (6.0, 5.8, 0))
+    lights = []
+    for o in get("SM_Candelabra"):
+        add(o, (-2.6, 3.2, 0))
+        add(o, (2.8, 3.2, 0))
+    lan = get("SM_CandyCaneLantern")[0]
+    add(lan, (-8.8, 2.0, 0), 0.6)
+    add(lan, (8.2, 1.6, 0), 2.6)
+    add(get("SM_Strawberry")[0], (-4.2, 0.5, 0), 0.3)
+    add(get("SM_Strawberry")[0], (-3.3, -0.4, 0), 1.7)
+    fab = get("SM_FabricRoll")[0]
+    for i, tx in enumerate([None, "T_SM_FabricRoll_Purple_D.png", "T_SM_FabricRoll_Red_D.png", "T_SM_FabricRoll_Pink_D.png"]):
+        add(fab, (0.5 + (i % 2) * 2.9, -0.2 - (i // 2) * 1.9, 0), 0.0, tx)
+    for x, y, z in ((-2.6, 3.2, 2.6), (2.8, 3.2, 2.6), (-8.3, 2.0, 2.2), (8.7, 1.6, 2.2)):
+        lt = bpy.data.lights.new("warm", "POINT"); lt.energy = 500; lt.color = (1.0, 0.6, 0.3)
+        lo = bpy.data.objects.new("warmL", lt); lo.location = (x, y, z); coll.objects.link(lo)
+    bpy.ops.mesh.primitive_cylinder_add(radius=0.3, depth=1.8, location=(-1.4, 0.2, 0.9))
+    ref = bpy.context.active_object
+    rm = bpy.data.materials.new("ref"); rm.use_nodes = True
+    rm.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (0.8, 0.35, 0.5, 1)
+    ref.data.materials.append(rm)
+    world = bpy.data.worlds.new("W"); sc.world = world
+    world.use_nodes = True
+    world.node_tree.nodes["Background"].inputs[0].default_value = (0.012, 0.010, 0.016, 1)
+    sun = bpy.data.lights.new("sun", "SUN"); sun.energy = 0.9; sun.color = (1.0, 0.85, 0.7)
+    so = bpy.data.objects.new("sun", sun); so.rotation_euler = (math.radians(40), 0, math.radians(20))
+    coll.objects.link(so)
+    key = bpy.data.lights.new("key", "AREA"); key.energy = 4500; key.size = 18; key.color = (1.0, 0.75, 0.5)
+    ko = bpy.data.objects.new("key", key); ko.location = (0, -2, 16); coll.objects.link(ko)
+    tgt = bpy.data.objects.new("tgt", None); tgt.location = (0, 2.8, 2.6); coll.objects.link(tgt)
+    cam = bpy.data.cameras.new("cam"); cam.type = "ORTHO"; cam.ortho_scale = 21
+    co = bpy.data.objects.new("cam", cam); coll.objects.link(co)
+    co.location = (0, 2.8 - 40 * math.cos(math.radians(30)), 2.6 + 40 * math.sin(math.radians(30)))
+    tc = co.constraints.new("TRACK_TO"); tc.target = tgt; tc.track_axis = "TRACK_NEGATIVE_Z"; tc.up_axis = "UP_Y"
+    sc.camera = co
+    set_engine(sc)
+    sc.render.resolution_x, sc.render.resolution_y = 1920, 1080
+    sc.view_settings.view_transform = "AgX"
+    sc.view_settings.look = "AgX - Punchy"
+    sc.render.filepath = os.path.join(OUT, "Preview", "props3_lineup.png")
+    bpy.ops.render.render(write_still=True)
+    print("[arena] preview3 done")
+
+
 if __name__ == "__main__":
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     if not argv:
@@ -1118,8 +1574,13 @@ if __name__ == "__main__":
         fns = dict(floor=build_floor, border=build_border, spool=build_spool, candle=build_candle,
                    needle=build_needle, pin=build_pin, button=build_button,
                    houseA=lambda: build_ginger_house("A"), houseB=lambda: build_ginger_house("B"),
-                   cake=build_cake_tower)
+                   cake=build_cake_tower,
+                   mirrorA=lambda: build_mirror("A"), mirrorB=lambda: build_mirror("B"),
+                   candelabra=build_candelabra, lantern=build_lantern, strawberry=build_strawberry,
+                   fabric=build_fabric_roll, bookshelf=build_bookshelf, arch=build_wall_arch)
         for n in argv[1:]:
             fns[n]()
     elif argv[0] == "preview":
         preview()
+    elif argv[0] == "preview3":
+        preview3()
