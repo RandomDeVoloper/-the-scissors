@@ -102,3 +102,9 @@ Skill'ler baştan topluca yüklenmez; görev kapsamına göre seçilir ve talima
 - Kök neden bulundu: `BP_Abilities_Component > SetStartingAbility` içindeki `Switch on E_ActiveAbilities` düğümünün `Scissor Snip` çıkışı boştu.
 - `Level Up Scissor Snip` çağrısı eklendi ve Scissor dalına bağlandı.
 - `BP_Abilities_Component` başarıyla compile edildi; PIE testinde Scissor Snip çalıştı.
+
+### 2026-11-28 - Karakterin SKM_Quinn_Simple'a donmesinin kaynagi
+
+- Akis: `LoadLastCharacterClass` -> `BFL_Helper.LoadPlayerData` -> save slot yoksa yeni save olusturup `SaveData.Character`'i `DT_AvailableCharacters/Char1` satirindan dolduruyor -> `S_SetCharacterData` -> OnRep mesh'i degistiriyor.
+- `Saved/SaveGames` bos, yani her PIE'de Char1 kullaniliyor. Char1 `Character SK` alanini hic override etmemis; `ST_AvailableCharacters` struct varsayilani `SKM_Quinn_Simple` oldugu icin Quinn geliyor. Diger satirlar (Char2-4) SKM_Manny kullaniyor.
+- Duzeltme scripti: `tools/fix_default_character_babydoll.py` (editor Python konsolunda calisir, Char1 -> SKM_BabyDoll, Saved/Backups'a yedek alir). Henuz calistirilip PIE ile dogrulanmadi.
